@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSIG Esposende</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { height: 100vh; width: 100%; }
+        .leaflet-popup-content-wrapper { border-radius: 8px; }
+        .leaflet-popup-content { margin: 10px; line-height: 1.5; }
+
+        /* Barra de Pesquisa */
+        #search-container {
+            position: absolute; top: 20px; left: 60px; z-index: 1000;
+            background: white; padding: 10px; border-radius: 5px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.2); font-family: sans-serif;
+            display: flex; gap: 5px; align-items: center;
+        }
+        #search-input { padding: 5px; border: 1px solid #ccc; border-radius: 3px; }
+        .btn-laranja {
+            padding: 5px 10px; background-color: #e65100; color: white;
+            border: none; border-radius: 3px; cursor: pointer;
+        }
+        .btn-laranja:hover { background-color: #ff6d00; }
+        .btn-ativo { background-color: #d32f2f !important; animation: piscar 2s infinite; }
+        @keyframes piscar { 0% {opacity: 1;} 50% {opacity: 0.7;} 100% {opacity: 1;} }
+        
+        /* Estilo da Etiqueta (Tooltip) */
+        .leaflet-tooltip { 
+            font-weight: bold; 
+            border: 1px solid #e65100; 
+            color: #e65100;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="search-container">
+        <label><b>Pesquisar:</b></label>
+        <input type="text" id="search-input" placeholder="Ex: Café, Rua...">
+        <button class="btn-laranja" onclick="pesquisar()">Ir</button>
+        <div style="border-left: 1px solid #ccc; height: 20px; margin: 0 5px;"></div>
+        <button id="btn-raio" class="btn-laranja" onclick="ativarModoRaio()">⭕ Raio</button>
+        <button id="btn-limpar" class="btn-laranja" style="display:none; background-color: #555;" onclick="limparSelecao()">✖ Limpar</button>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        // --- 1. O MAPA ---
+        var map = L.map('map').setView([41.53, -8.78], 13);
+
+        // --- 2. CRIAÇÃO DE PAINÉIS ---
+        map.createPane('painelFundo');
+        map.getPane('painelFundo').style.zIndex = 200; 
+
+        map.createPane('painelMeio');
+        map.getPane('painelMeio').style.zIndex = 400; 
+
+        map.createPane('painelTopo');
+        map.getPane('painelTopo').style.zIndex = 600; 
+
+        // --- 3. CONFIGURAÇÃO WMS ---
+        var wmsOptions = {
+            format: 'image/png',
+            transparent: true,
+            version: '1.1.0',
+            tiled: false,        
+            updateWhenIdle: true
+        };
+
+        // --- 4. DEFINIR CAMADAS ---
+        var layerGrupo = L.tileLayer.wms('http://localhost:8081/geoserver/sig_esposende/wms', 
+            L.extend({layers: 'sig_esposende:mapa_esposende'}, wmsOptions));
+
+        var layerFundo = L.tileLayer.wms('http://localhost:8081/geoserver/sig_esposende/wms', 
+            L.extend({layers: 'sig_esposende:limiteadministrativo', pane: 'painelFundo', opacity: 0.4}, wmsOptions));
+
+        var layerVerde = L.tileLayer.wms('http://localhost:8081/geoserver/sig_esposende/wms', 
+            L.extend({layers: 'sig_esposende:zonaverde', pane: 'painelMeio', opacity: 0.6}, wmsOptions));
+
+        var layerVias = L.tileLayer.wms('http://localhost:8081/geoserver/sig_esposende/wms', 
+            L.extend({layers: 'sig_esposende:via', pane: 'painelMeio', opacity: 1.0}, wmsOptions));
+
+        var layerLazer = L.tileLayer.wms('http://localhost:8081/geoserver/sig_esposende/wms', 
+            L.extend({layers: 'sig_esposende:espacolazer', pane: 'painelTopo', opacity: 1.0}, wmsOptions));
+
+        var layerComercio = L.tileLayer.wms('http://localhost:8081/geoserver/sig_esposende/wms', 
+            L.extend({layers: 'sig_esposende:comercio', pane: 'painelTopo', opacity: 1.0}, wmsOptions));
+
+        layerGrupo.addTo(map);
+
+        // --- 5. MENU DE CAMADAS ---
+        var osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' });
+
+        var baseMaps = { 
+            "Ver Tudo (Grupo)": layerGrupo, 
+            "Modo Seleção (OSM)": osm
+        };
+
+        var overlayMaps = {
+            "🛒 Comércio (Topo)": layerComercio,
+            "⚽ Espaço Lazer (Topo)": layerLazer,
+            "🛣️ Ruas (Meio)": layerVias,
+            "🌳 Zonas Verdes (Meio)": layerVerde,
+            "⬜ Fundo (Baixo)": layerFundo
+        };
+
+        L.control.layers(baseMaps, overlayMaps).addTo(map);
+        L.control.scale({metric: true, imperial: false}).addTo(map);
+
+        // ============================================================
+        // MAPEAMENTO DE CAMADAS
+        // ============================================================
+        var mapeamentoCamadas = {
+            'comercio': layerComercio,
+            'espacolazer': layerLazer,
+            'via': layerVias,
+            'zonaverde': layerVerde,
+            'limiteadministrativo': layerFundo
+        };
+
+        // --- 6. CLIQUE INTELIGENTE ---
+        var camadaClick = L.tileLayer.wms('http://localhost:8081/geoserver/sig_esposende/wms', {
+            layers: 'sig_esposende:mapa_esposende', format: 'image/png', transparent: true, opacity: 0, tiled: false
+        }).addTo(map);
+
+        map.on('click', function(e) {
+            if (modoRaioAtivo) { executarPesquisaRaio(e.latlng); return; }
+
+            var url = getFeatureInfoUrl(map, camadaClick, e.latlng, {
+                'info_format': 'application/json', 'feature_count': 10, 'buffer': 20
+            });
+
+            if (url) {
+                fetch(url).then(r => r.json()).then(data => {
+                    if (data.features && data.features.length > 0) {
+                        var featuresVisiveis = data.features.filter(function(f) {
+                            var nomeTipo = f.id.split('.')[0]; 
+                            var camadaCorrespondente = mapeamentoCamadas[nomeTipo];
+                            var grupoAtivo = map.hasLayer(layerGrupo);
+                            var camadaIndividualAtiva = camadaCorrespondente && map.hasLayer(camadaCorrespondente);
+                            return grupoAtivo || camadaIndividualAtiva;
+                        });
+
+                        if (featuresVisiveis.length === 0) return;
+
+                        var prioridades = ['comercio', 'espacolazer', 'zonaverde', 'via', 'limiteadministrativo'];
+                        featuresVisiveis.sort((a, b) => prioridades.indexOf(a.id.split('.')[0]) - prioridades.indexOf(b.id.split('.')[0]));
+                        
+                        var f = featuresVisiveis[0];
+                        var html = "<b>" + f.id.split('.')[0].toUpperCase() + "</b><br>";
+                        var ignorar = ['bbox','geometry','the_geom','gid','id','created_at','updated_at','id_tipo','cod_postal'];
+                        for(var key in f.properties) { if(!ignorar.includes(key) && f.properties[key]) html += key + ": " + f.properties[key] + "<br>"; }
+                        L.popup().setLatLng(e.latlng).setContent(html).openOn(map);
+                    }
+                });
+            }
+        });
+
+        // --- NOVO: FUNÇÃO PARA LIMPAR SELEÇÕES ---
+        function limparSelecao() {
+            if (camadaResultados) map.removeLayer(camadaResultados);
+            if (camadaRaio) map.removeLayer(camadaRaio);
+            document.getElementById('btn-limpar').style.display = 'none';
+        }
+
+        // --- 7. PESQUISA RAIO ---
+        var modoRaioAtivo = false, camadaRaio, camadaResultados;
+
+        function ativarModoRaio() {
+            modoRaioAtivo = !modoRaioAtivo;
+            var btn = document.getElementById('btn-raio');
+            if (modoRaioAtivo) {
+                btn.classList.add('btn-ativo'); document.getElementById('map').style.cursor = "crosshair";
+            } else {
+                btn.classList.remove('btn-ativo'); document.getElementById('map').style.cursor = "";
+                if(camadaRaio) map.removeLayer(camadaRaio);
+                if(camadaResultados) map.removeLayer(camadaResultados);
+            }
+        }
+
+        function executarPesquisaRaio(latlng) {
+            var dist = prompt("Qual o raio (metros)?", "500");
+            if (!dist) { ativarModoRaio(); return; }
+            dist = parseFloat(dist);
+
+            if(camadaRaio) map.removeLayer(camadaRaio);
+            if(camadaResultados) map.removeLayer(camadaResultados);
+
+            camadaRaio = L.circle(latlng, { radius: dist }).addTo(map);
+            map.fitBounds(camadaRaio.getBounds());
+
+            var pM = L.CRS.EPSG3857.project(latlng);
+            var bbox = (pM.x - dist) + ',' + (pM.y - dist) + ',' + (pM.x + dist) + ',' + (pM.y + dist);
+
+            var definicoesCamadas = [
+                { wfsName: 'sig_esposende:comercio', layerVar: layerComercio },
+                { wfsName: 'sig_esposende:espacolazer', layerVar: layerLazer },
+                { wfsName: 'sig_esposende:zonaverde', layerVar: layerVerde },
+                { wfsName: 'sig_esposende:via', layerVar: layerVias }
+            ];
+
+            var camadasParaPesquisar = definicoesCamadas.filter(function(def) {
+                return map.hasLayer(layerGrupo) || map.hasLayer(def.layerVar);
+            }).map(d => d.wfsName);
+
+            if (camadasParaPesquisar.length === 0) {
+                alert("Nenhuma camada de dados selecionada para pesquisar.");
+                ativarModoRaio();
+                return;
+            }
+
+            var promises = camadasParaPesquisar.map(c => 
+                fetch('http://localhost:8081/geoserver/sig_esposende/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=' + c + '&outputFormat=application/json&srsName=EPSG:4326&CQL_FILTER=BBOX(geom,' + bbox + ',\'EPSG:3857\')').then(r => r.json())
+            );
+
+            Promise.all(promises).then(res => {
+                ativarModoRaio();
+                var allFeats = [];
+                res.forEach(d => {
+                    if(d.features) {
+                        var valid = d.features.filter(f => f.geometry.type !== "Point" || latlng.distanceTo(L.latLng(f.geometry.coordinates[1], f.geometry.coordinates[0])) <= dist);
+                        allFeats = allFeats.concat(valid);
+                    }
+                });
+
+                if(allFeats.length > 0) {
+                    camadaResultados = L.geoJSON(allFeats, {
+                        style: {color: "yellow", weight: 5},
+                        pointToLayer: (f, ll) => L.circleMarker(ll, {radius: 8, fillColor: "yellow", color: "#000", fillOpacity: 1}),
+                        onEachFeature: function(feature, layer) {
+                            if (feature.properties && feature.properties.nome) {
+                                layer.bindTooltip(feature.properties.nome, {
+                                    permanent: false, 
+                                    direction: 'top'
+                                });
+                            }
+                        }
+                    }).addTo(map);
+                    // MOSTRAR BOTÃO LIMPAR
+                    document.getElementById('btn-limpar').style.display = 'block';
+                    alert("Encontrei " + allFeats.length + " elementos nas camadas ativas!");
+                } else { alert("Nada encontrado na área (ou nas camadas ativas)."); }
+            });
+        }
+
+        // --- 8. PESQUISA NOME ---
+        function pesquisar() {
+            var txt = document.getElementById('search-input').value;
+            if(!txt) return;
+        
+            if(camadaResultados) map.removeLayer(camadaResultados);
+        
+            var definicoesCamadas = [
+                { wfsName: 'sig_esposende:comercio', layerVar: layerComercio },
+                { wfsName: 'sig_esposende:espacolazer', layerVar: layerLazer },
+                { wfsName: 'sig_esposende:zonaverde', layerVar: layerVerde },
+                { wfsName: 'sig_esposende:via', layerVar: layerVias }
+            ];
+
+            var camadasParaPesquisar = definicoesCamadas.filter(function(def) {
+                return map.hasLayer(layerGrupo) || map.hasLayer(def.layerVar);
+            }).map(d => d.wfsName);
+
+            if (camadasParaPesquisar.length === 0) {
+                alert("Nenhuma camada visível para pesquisar. Ative uma camada no menu lateral.");
+                return;
+            }
+
+            var promises = camadasParaPesquisar.map(c => 
+                fetch('http://localhost:8081/geoserver/sig_esposende/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=' + c + '&outputFormat=application/json&srsName=EPSG:4326&CQL_FILTER=nome ILIKE \'%25' + txt + '%25\'')
+                .then(r => r.json())
+            );
+
+            Promise.all(promises).then(res => {
+                var allFeats = [];
+                res.forEach(d => { if(d.features) allFeats = allFeats.concat(d.features); });
+            
+                if(allFeats.length > 0) {
+                    camadaResultados = L.geoJSON(allFeats, {
+                        style: {color: "red", weight: 5},
+                        pointToLayer: (f, ll) => L.circleMarker(ll, {radius: 10, fillColor: "red", color: "#000"}),
+                        onEachFeature: function(feature, layer) {
+                            if (feature.properties && feature.properties.nome) {
+                                layer.bindTooltip(feature.properties.nome, {
+                                    permanent: false, 
+                                    direction: 'top'
+                                });
+                            }
+                        }
+                    }).addTo(map);
+                    map.fitBounds(camadaResultados.getBounds());
+                    // MOSTRAR BOTÃO LIMPAR
+                    document.getElementById('btn-limpar').style.display = 'block';
+                    alert("Encontrei " + allFeats.length + " resultados nas camadas visíveis.");
+                } else { 
+                    alert("Nada encontrado nas camadas ativas."); 
+                }
+            });
+        }
+
+        function getFeatureInfoUrl(map, layer, latlng, params) {
+            var point = map.latLngToContainerPoint(latlng, map.getZoom()), size = map.getSize(), bounds = map.getBounds(), sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+            var p = { request: 'GetFeatureInfo', service: 'WMS', srs: 'EPSG:4326', styles: '', version: layer.wmsParams.version, format: layer.wmsParams.format, bbox: sw.lng+','+sw.lat+','+ne.lng+','+ne.lat, height: size.y, width: size.x, layers: layer.wmsParams.layers, query_layers: layer.wmsParams.layers, info_format: 'application/json' };
+            p['x'] = Math.round(point.x); p['y'] = Math.round(point.y);
+            return layer._url + L.Util.getParamString(L.extend(p, params), layer._url, true);
+        }
+    </script>
+</body>
+</html>
